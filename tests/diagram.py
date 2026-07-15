@@ -18,7 +18,7 @@ class create_diagram:
 
         colors = ['r', 'b', 'g']
         self.link_lines = [
-            self.ax.plot([], [], color=colors[i], linewidth=5)[0]
+            self.ax.plot([], [], color=colors[i], linewidth=5, label=f'Link {i+1}')[0]
             for i in range(self.n_links)
         ]
         self.end_effector_point, = self.ax.plot([], [], 'go')
@@ -51,7 +51,7 @@ class create_diagram:
         self.target_thetas = list(thetas)
         self._draw()
 
-    def triangle(self, thetas):
+    def triangle(self, thetas, outline_color='orange', fill_color='orange', alpha=0.3):
         # Draw a triangle representing the arm's reachable workspace
         link_lengths = self.arm.link_lengths
         total_length = sum(link_lengths)
@@ -62,19 +62,20 @@ class create_diagram:
             (self.end_effector_point.get_xdata()[0], self.end_effector_point.get_ydata()[0]),
             (0, 0)  # Close the triangle
         ]
-        self.ax.fill([v[0] for v in triangle_vertices], [v[1] for v in triangle_vertices], alpha=0.3)
+        self.ax.fill([v[0] for v in triangle_vertices], [v[1] for v in triangle_vertices], color=fill_color, alpha=alpha)
+        self.ax.plot([v[0] for v in triangle_vertices], [v[1] for v in triangle_vertices], color=outline_color, linewidth=2)
     def label(self, text, position):
         self.ax.text(position[0], position[1], text, fontsize=12, ha='center', va='center', color='black')
 
 
 def main():
     diagram = create_diagram(link1_length=5.0, link2_length=3.0)
-    theta1 = 45
-    theta2 = 30
+    theta1 = math.radians(45)
+    theta2 = math.radians(30)
     diagram.set_pose_immediately(theta1, theta2)
     diagram.triangle([theta1, theta2])
-    diagram.label("Joint 1", (0, 0))
-    diagram.label("Joint 2", diagram.arm._joint_positions([theta1, theta2])[1])
+    diagram.label("a1", (2.2, 1.6))
+    diagram.label("a2", (4.5, 4.9))
     plt.show()
 
 if __name__ == "__main__":
