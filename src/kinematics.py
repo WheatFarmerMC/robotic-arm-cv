@@ -111,12 +111,12 @@ class Arm2D:
             joints = self._joint_positions(thetas)
 
         end_effector = joints[-1]
-        lever_arms = end_effector - joints[:-1]           # (n_links, 2) — vectorized, no per-joint python loop
+        lever_arms = end_effector - joints[:-1]           # (n_links, 2) — vectorized, no per-joint python loopgdg
         J = np.column_stack((-lever_arms[:, 1], lever_arms[:, 0]))
         return J.T                                          # (2, n_links)
 
     def inverse_kinematics_jacobian_pinv(self, x, y, theta_init, max_iterations=150,
-                                        tolerance=1e-4, damping=0.1, return_diagnostics=False):
+                                        tolerance=1e-4, damping=0.1, return_diagnostics=False, max_step=0.5):
         distance = math.sqrt(x**2 + y**2)
         if distance > (self.link1_length + self.link2_length + (self.link3_length if self.link3_length is not None else 0)):
             raise ValueError("Target position is out of reach.")
@@ -129,6 +129,9 @@ class Arm2D:
         iterations_used = max_iterations
         
         for i in range(max_iterations):
+            for theta in thetas:
+                if theta == 0:
+                    theta = 1e-3  # Avoid singularity at zero angles
             joints = self._joint_positions(thetas)
             error = target - joints[-1]
 
@@ -141,7 +144,9 @@ class Arm2D:
             # Unconstrained step, to see which direction each joint WANTS to move
             J_pinv = J.T @ np.linalg.inv(J @ J.T + damping_matrix)
             delta_theta = J_pinv @ error
-
+            step_norm = np.linalg.norm(delta_theta)
+            if step_norm > max_step:
+                delta_theta *= max_step / step_norm
             # A joint is "saturated" if it's sitting at a limit AND the proposed
             # step would push it further past that limit
             at_lower = (thetas <= self.theta_min) & (delta_theta < 0)
@@ -169,34 +174,62 @@ class Arm2D:
             final_error = np.linalg.norm(target - self._joint_positions(thetas)[-1])
             return tuple(thetas), {"iterations": iterations_used, "final_error": final_error}
         return tuple(thetas)
-    def inverse_kinematics_jacobian_multistart(self, x, y, n_starts=6, seed=None, **solver_kwargs):
-        """
-        Runs the local Jacobian solver from several random starting poses and
-        keeps whichever converges to the lowest error. A single-start Jacobian
-        solver can get trapped against a joint limit if the nearest solution
-        branch to its starting guess happens to lie out of bounds, even when a
-        DIFFERENT branch is fully reachable. Multi-start works around this by
-        giving the solver several chances to land in the right basin.
-        """
-        rng = np.random.default_rng(seed)
-        tolerance = solver_kwargs.get("tolerance", 1e-4)
+    def inverse_kinematics_jacobian_log(self, x, y, theta_init, max_iterations=150,
+                                        tolerance=1e-4, damping=0.1, return_diagnostics=False, max_step=0.5):
+        distance = math.sqrt(x**2 + y**2)
+        if distance > (self.link1_length + self.link2_length + (self.link3_length if self.link3_length is not None else 0)):
+            raise ValueError("Target position is out of reach.")
+        if distance < abs(self.link1_length - self.link2_length - (self.link3_length if self.link3_length is not None else 0)):
+            raise ValueError("Target position is too close to reach.")
+        thetas = np.array(theta_init, dtype=float)
+        target = np.array([x, y])
+        damping_matrix = (damping ** 2) * np.eye(2)
 
-        best_thetas, best_diag = None, {"final_error": np.inf, "iterations": 0}
-        total_iterations = 0
+        iterations_used = max_iterations
+        logthetas = []  # To store the sequence of intermediate poses
+        logjacobs = []  # To store the sequence of Jacobians
+        for i in range(max_iterations):
+            logthetas.append(tuple(thetas))  # Store the current pose
 
-        for attempt in range(n_starts):
-            init = rng.uniform(self.theta_min, self.theta_max)
-            thetas, diag = self.inverse_kinematics_jacobian_pinv(
-                x, y, theta_init=init, return_diagnostics=True, **solver_kwargs
-            )
-            total_iterations += diag["iterations"]
+            joints = self._joint_positions(thetas)
+            error = target - joints[-1]
 
-            if diag["final_error"] < best_diag["final_error"]:
-                best_thetas, best_diag = thetas, diag
+            if np.linalg.norm(error) < tolerance:
+                iterations_used = i
+                break
 
-            if best_diag["final_error"] < tolerance:
-                break  # already good enough, no need to burn more restarts
+            J = self._jacobian(thetas, joints=joints)
+            logjacobs.append(J.copy())  # Store the current Jacobian
 
-        best_diag["total_iterations_all_starts"] = total_iterations
-        best_diag["starts_used"] = attempt + 1
-        return best_thetas, best_diag
+            # Unconstrained step, to see which direction each joint WANTS to move
+            J_pinv = J.T @ np.linalg.inv(J @ J.T + damping_matrix)
+            delta_theta = J_pinv @ error
+
+            # A joint is "saturated" if it's sitting at a limit AND the proposed
+            # step would push it further past that limit
+            at_lower = (thetas <= self.theta_min) & (delta_theta < 0)
+            at_upper = (thetas >= self.theta_max) & (delta_theta > 0)
+            freeze_mask = at_lower | at_upper
+
+            if np.any(freeze_mask):
+                # Zero out frozen joints' columns — solver redistributes the
+                # correction across whichever joints are still free to move.
+                # (If EVERY joint happens to be frozen, J_active is all zero, but
+                # the damping term keeps the inverse well-defined and correctly
+                # yields delta_theta = 0 — no movement possible, which is correct.)
+                J_active = J.copy()
+                J_active[:, freeze_mask] = 0.0
+                J_pinv = J_active.T @ np.linalg.inv(J_active @ J_active.T + damping_matrix)
+                delta_theta = J_pinv @ error
+                delta_theta[freeze_mask] = 0.0
+
+            print(delta_theta)
+            thetas += delta_theta
+            np.clip(thetas, self.theta_min, self.theta_max, out=thetas)  # safety net for tiny float drift only
+
+            iterations_used = i + 1
+
+        if return_diagnostics:
+            final_error = np.linalg.norm(target - self._joint_positions(thetas)[-1])
+            return tuple(thetas), {"iterations": iterations_used, "final_error": final_error}
+        return tuple(thetas), logthetas, logjacobs  # Return the sequence of intermediate poses and Jacobians

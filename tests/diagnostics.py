@@ -2,7 +2,7 @@ import csv
 import time
 import numpy as np
 import matplotlib.pyplot as plt
-from ..src.kinematics import Arm2D
+from src.kinematics import Arm2D
 
 
 def generate_reachable_targets(arm, n_points, seed=43):
@@ -108,6 +108,15 @@ def diagnose_failures(arm, targets, theta_init=None, n_show=5):
             shown += 1
             if shown >= n_show:
                 break
+def create_movement_log(arm, target, theta_init=None):
+    """
+    For a single target, record the entire sequence of intermediate poses
+    the Jacobian solver goes through, for later plotting/analysis.
+    """
+    init = theta_init if theta_init is not None else safe_default_pose(arm)
+    return arm.inverse_kinematics_jacobian_log(target[0], target[1], theta_init=init)
+
+    
 
 def benchmark_jacobian(arm, targets, theta_init=None):
     times, errors, iterations = [], [], []
@@ -115,7 +124,7 @@ def benchmark_jacobian(arm, targets, theta_init=None):
         init = theta_init if theta_init is not None else safe_default_pose(arm)
         start = time.perf_counter()
         thetas, diag = arm.inverse_kinematics_jacobian_pinv(
-            x, y, theta_init=init, return_diagnostics=True
+            x, y, theta_init=init, return_diagnostics=True, damping=0.1
         )
         times.append(time.perf_counter() - start)
         errors.append(position_error(arm, thetas, (x, y)))
@@ -168,8 +177,9 @@ def main():
     # Scenario A: independent random targets (worst-case stress test)
     random_targets = generate_reachable_targets(arm, n_trials)
     geo_times, geo_errors = benchmark_geometric(arm, random_targets)
-    jac_times, jac_errors, jac_iterations = benchmark_jacobian_warmstart(arm, click_targets)
+    jac_times, jac_errors, jac_iterations = benchmark_jacobian(arm, random_targets)
 
+    diagnose_failures(arm, random_targets, theta_init=safe_default_pose(arm), n_show=5)
     # Scenario B: click-path targets (realistic usage — matches simulation.py)
     
     warm_times, warm_errors, warm_iterations = benchmark_jacobian_warmstart(arm, click_targets)
@@ -180,6 +190,8 @@ def main():
 
     save_csv("ik_benchmark_results.csv", geo_times, geo_errors, jac_times, jac_errors, jac_iterations)
     print("\nRaw per-trial data written to ik_benchmark_results.csv")
+
+    
 
     plot_comparison(geo_times, jac_times, jac_iterations)
 

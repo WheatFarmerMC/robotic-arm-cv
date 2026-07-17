@@ -40,10 +40,21 @@ class Arm2DSimulation:
 
         self.fig.canvas.mpl_connect('button_press_event', self.onclick)
         self.animation = FuncAnimation(self.fig, self._animate, interval=16, cache_frame_data=False)
+        self.jacobian_text = self.ax.text(
+            0.02, 0.98, '', transform=self.ax.transAxes,
+            fontsize=9, fontfamily='monospace', verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.85)
+        )
 
     def set_click_callback(self, callback):
         self.click_callback = callback
-
+    def _format_jacobian(self, J):
+        rows, cols = J.shape
+        lines = [f"J ({rows}x{cols}):"]
+        for r in range(rows):
+            row_str = "  ".join(f"{J[r, c]:6.2f}" for c in range(cols))
+            lines.append(f"[{row_str}]")
+        return "\n".join(lines)
     def onclick(self, event):
         if event.xdata is None or event.ydata is None:
             return
@@ -82,6 +93,9 @@ class Arm2DSimulation:
             x, y = new_x, new_y
 
         self.end_effector_point.set_data([x], [y])
+
+        J = self.arm._jacobian(self.current_thetas)
+        self.jacobian_text.set_text(self._format_jacobian(J))
 
     def show(self):
         plt.show()
